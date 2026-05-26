@@ -1,2 +1,3 @@
-# modelamiento-matematico-rut
-Aplicación interactiva para validación de RUT, modelamiento/clasificación de secciones cónicas y análisis algorítmico de límites en funciones por tramos. Desarrollado para MAT1186 - Ingeniería Civil en Informática (UCT). Todo el núcleo matemático fue implementado de forma nativa sin librerías simbólicas.
+# Evaluación Integrada de Desempeño N°1 - MAT1186
+
+Proyecto de software orientado a la resolución, modelamiento y visualización de secciones cónicas y funciones por tramos a partir de un RUT chileno válido.
