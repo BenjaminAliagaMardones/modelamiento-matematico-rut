@@ -11,6 +11,7 @@ from src.conicas.clasificador import clasificar
 from src.conicas.constructor import construir_ecuacion
 from src.conicas.grafica import puntos_conica
 from src.rut.validador import validar_rut
+from src.conicas.algebra import raiz_cuadrada
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -141,6 +142,7 @@ class App(ctk.CTk):
         derecha.pack(side="left", fill="both", expand=True)
         ctk.CTkLabel(
             derecha,
+            text="",
             font=("", 12), justify="left",
         ).pack(anchor="w", padx=8, pady=(4, 8))
         for nombre in CAMPOS_ELEMENTOS:
@@ -150,6 +152,130 @@ class App(ctk.CTk):
             entrada = ctk.CTkEntry(fila, placeholder_text="...")
             entrada.pack(side="left", fill="x", expand=True)
             self._entries_elementos[nombre] = entrada
+        
+        self._lbl_resultado_val = ctk.CTkLabel(derecha, text="", font=("", 13, "bold"))
+        self._lbl_resultado_val.pack(pady=(12, 4))
+
+        self._btn_validar = ctk.CTkButton(
+            derecha, text="Validar Elementos", command=self._validar_elementos
+        )
+        self._btn_validar.pack(pady=(0, 12))
+
+    def _analizar_elementos(self, datos_canonica, datos_grafica):
+            from src.conicas.algebra import fmt_dec
+            
+            tipo = datos_canonica["tipo"]
+            h = datos_canonica["h"]
+            k = datos_canonica["k"]
+            
+            self._elementos_correctos = {campo: "No aplica" for campo in CAMPOS_ELEMENTOS}
+            
+            if tipo == "degenerada":
+                return
+
+            if tipo in ("circunferencia", "elipse", "hipérbola"):
+                self._elementos_correctos["Centro"] = f"({h},{k})"
+
+            if tipo == "elipse":
+                a = datos_canonica.get("a", 0.0)
+                b = datos_canonica.get("b", 0.0)
+                self._elementos_correctos["Eje mayor / transverso"] = fmt_dec(2 * a)
+                self._elementos_correctos["Eje menor / conjugado"] = fmt_dec(2 * b)
+                self._elementos_correctos["Vértice(s)"] = f"a={fmt_dec(a)}"
+                self._elementos_correctos["Foco(s)"] = "Ver ecuación canónica"
+
+            elif tipo == "hipérbola":
+                dx_abs = raiz_cuadrada(abs(datos_canonica["denom_x"].a_decimal()))
+                dy_abs = raiz_cuadrada(abs(datos_canonica["denom_y"].a_decimal()))
+                self._elementos_correctos["Eje mayor / transverso"] = fmt_dec(2 * dx_abs)
+                self._elementos_correctos["Eje menor / conjugado"] = fmt_dec(2 * dy_abs)
+                self._elementos_correctos["Vértice(s)"] = "Ver desarrollo"
+
+            elif tipo == "parábola" and not datos_canonica.get("degenerada"):
+                # En la parábola el (h, k) es el Vértice, no el Centro
+                self._elementos_correctos["Centro"] = "No aplica"
+                self._elementos_correctos["Vértice(s)"] = f"({h},{k})"
+                
+                p = datos_canonica["p"]
+                factor = datos_canonica["factor"]
+                self._elementos_correctos["Eje mayor / transverso"] = "No aplica" # Parábola no tiene ambos ejes
+                self._elementos_correctos["Eje menor / conjugado"] = "No aplica"
+                
+                if datos_canonica["orientacion"] == "vertical":
+                    # Foco (h, k + p), Directriz y = k - p
+                    foco_y = k.a_decimal() + p.a_decimal()
+                    dir_y = k.a_decimal() - p.a_decimal()
+                    self._elementos_correctos["Foco(s)"] = f"({h},{fmt_dec(foco_y)})"
+                    self._elementos_correctos["Directriz"] = f"y={fmt_dec(dir_y)}"
+                else:
+                    # Horizontal: Foco (h + p, k), Directriz x = h - p
+                    foco_x = h.a_decimal() + p.a_decimal()
+                    dir_x = h.a_decimal() - p.a_decimal()
+                    self._elementos_correctos["Foco(s)"] = f"({fmt_dec(foco_x)},{k})"
+                    self._elementos_correctos["Directriz"] = f"x={fmt_dec(dir_x)}"
+
+    def _validar_elementos(self):
+        # Si aún no se ha ejecutado un análisis de RUT válido
+        if not hasattr(self, "_elementos_correctos"):
+            self._lbl_resultado_val.configure(
+                text="Primero debes analizar un RUT válido.", text_color="#ff6b6b"
+            )
+            return
+
+        errores = 0
+        campos_revisados = 0
+
+        def normalizar_y_evaluar(texto: str) -> str:
+            """Limpia espacios y resuelve fracciones simples (ej: '1/2' -> '0.5') 
+            para poder comparar valores numéricos con flexibilidad."""
+            t = texto.replace(" ", "").lower()
+            if not t or t == "..." or t == "noaplica":
+                return "noaplica"
+            # Intentar parsear si es un formato de coordenada (x,y)
+            if t.startswith("(") and t.endswith(")"):
+                partes = t[1:-1].split(",")
+                if len(partes) == 2:
+                    return f"({normalizar_y_evaluar(partes[0])},{normalizar_y_evaluar(partes[1])})"
+            # Intentar resolver si contiene una barra de división (Fracción)
+            if "/" in t and not t.startswith("x=") and not t.startswith("y="):
+                try:
+                    num, den = t.split("/")
+                    return f"{float(num)/float(den):.2f}"
+                except ValueError:
+                    pass
+            # Intentar convertir un número plano a float estándar
+            try:
+                return f"{float(t):.2f}"
+            except ValueError:
+                return t
+
+        for campo in CAMPOS_ELEMENTOS:
+            entrada_usuario = self._entries_elementos[campo].get()
+            valor_real = self._elementos_correctos[campo]
+
+            usuario_norm = normalizar_y_evaluar(entrada_usuario)
+            real_norm = normalizar_y_evaluar(str(valor_real))
+
+            if usuario_norm == "noaplica" and real_norm != "noaplica":
+                self._entries_elementos[campo].configure(fg_color="#3a2f1d")
+                errores += 1
+            elif usuario_norm == real_norm:
+                self._entries_elementos[campo].configure(fg_color="#1e3a1e")
+            else:
+                self._entries_elementos[campo].configure(fg_color="#3a1e1e")
+                errores += 1
+            campos_revisados += 1
+
+        if errores == 0:
+            self._lbl_resultado_val.configure(
+                text="¡Todos los elementos son correctos! 🎉", text_color="#5dd39e"
+            )
+        else:
+            self._lbl_resultado_val.configure(
+                text=f"Revisión completada. Tienes {errores} observaciones.", text_color="#ff6b6b"
+            )
+        
+
 
     # ------------------------------------------------------------- lógica
     def _set_text(self, caja: ctk.CTkTextbox, texto: str) -> None:
@@ -201,12 +327,20 @@ class App(ctk.CTk):
         )
         datos = puntos_conica(res["coeficientes"], can["parametros"], tipo)
         self._dibujar(datos)
+        self._analizar_elementos(can["parametros"], datos)
 
     def _limpiar_resultados(self) -> None:
         for caja in (self._txt_ecuacion, self._txt_canonica):
             self._set_text(caja, "")
         self._canvas.delete("all")
         self._lbl_grafica.configure(text="—")
+        if hasattr(self, "_lbl_resultado_val"):
+            self._lbl_resultado_val.configure(text="")
+        
+        # Restablece las entradas de texto a su estado base
+        for entrada in self._entries_elementos.values():
+            entrada.delete(0, "end")
+            entrada.configure(fg_color=("#F9F9FA", "#343638"))
 
     # ------------------------------------------------------------- dibujo
     def _dibujar(self, datos: dict) -> None:
