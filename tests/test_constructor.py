@@ -60,11 +60,11 @@ def test_parabola_eje_horizontal_11111233_9() -> None:
 def test_pasos_contienen_secciones_clave() -> None:
     r = construir_ecuacion("12345678-5")
     texto = "\n".join(r["pasos"])
-    assert "Dígitos extraídos" in texto
-    assert "Valor auxiliar v" in texto
+    assert "Dígitos del RUT" in texto
+    assert "v = 5" in texto
     assert "A = (d1 + d2) / v" in texto
-    assert "Aplicación de reglas de ajuste" in texto
-    assert "Ecuación general resultante" in texto
+    assert "Reglas de ajuste" in texto
+    assert "Ecuación general:" in texto
 
 
 def test_ecuacion_string_formato() -> None:
