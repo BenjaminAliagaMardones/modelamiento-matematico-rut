@@ -105,19 +105,14 @@ class App(ctk.CTk):
 
         self._tabs = ctk.CTkTabview(self)
         self._tabs.pack(fill="both", expand=True, padx=12, pady=(6, 12))
-        for nombre in ("RUT", "Ecuación general", "Clasificación / Canónica", "Gráfica", "Límites"):
+        for nombre in ("RUT", "Ecuación general", "Clasificación / Canónica", "Gráfica", "Límites","Gráfica Tramos"):
             self._tabs.add(nombre)
 
         self._txt_rut = self._textbox(self._tabs.tab("RUT"))
         self._txt_ecuacion = self._textbox(self._tabs.tab("Ecuación general"))
         self._txt_canonica = self._textbox(self._tabs.tab("Clasificación / Canónica"))
         self._construir_tab_grafica(self._tabs.tab("Gráfica"))
-
-        ctk.CTkLabel(
-            self._tabs.tab("Límites"),
-            text="El módulo de límites y funciones por tramos llega en la segunda mitad del proyecto.",
-            font=("", 15),
-        ).pack(expand=True)
+        self._txt_tramos = self._textbox(self._tabs.tab("Límites"))
 
     def _textbox(self, padre) -> ctk.CTkTextbox:
         caja = ctk.CTkTextbox(padre, font=FUENTE_MONO, wrap="none")
@@ -329,11 +324,44 @@ class App(ctk.CTk):
         self._dibujar(datos)
         self._analizar_elementos(can["parametros"], datos)
 
+        try:
+            from src.tramos.constructor import construir_funcion
+            from src.tramos.limites import analizar_limites
+            from src.tramos.tablas import generar_tabla_valores
+            from src.tramos.grafica import obtener_puntos_grafica
+            
+            res_tramo = construir_funcion(entrada)
+            
+            res_limites = analizar_limites(res_tramo)
+            
+            res_tabla = generar_tabla_valores(res_tramo)
+            
+            bloque_final = res_tramo["pasos"]
+            bloque_final += ["", "="*60]
+            bloque_final += res_limites["pasos"]
+            bloque_final += ["", "="*60]
+            bloque_final += res_tabla["pasos"]
+            
+            self._set_text(self._txt_tramos, "\n".join(bloque_final))
+            
+            datos_grafica = obtener_puntos_grafica(res_tramo)
+            self._dibujar_tramos(datos_grafica)
+            
+        except Exception:
+            self._set_text(self._txt_tramos, "")
     def _limpiar_resultados(self) -> None:
-        for caja in (self._txt_ecuacion, self._txt_canonica):
+        for caja in (self._txt_ecuacion, self._txt_canonica, self._txt_tramos):
             self._set_text(caja, "")
+
         self._canvas.delete("all")
+
+        if hasattr(self, "_canvas_tramos"):
+            self._canvas_tramos.delete("all")
         self._lbl_grafica.configure(text="—")
+        
+        if hasattr(self, "_lbl_tramos_grafica"):
+            self._lbl_tramos_grafica.configure(text="—")
+        
         if hasattr(self, "_lbl_resultado_val"):
             self._lbl_resultado_val.configure(text="")
         
@@ -387,6 +415,62 @@ class App(ctk.CTk):
             self._canvas.create_line(cx - 6, cy, cx + 6, cy, fill=COLOR_CENTRO, width=2)
             self._canvas.create_line(cx, cy - 6, cx, cy + 6, fill=COLOR_CENTRO, width=2)
 
+# ------------------------------------------------------- dibujo tramos
+    def _dibujar_tramos(self, datos: dict) -> None:
+        # Inicializa los componentes en la pestaña "Gráfica Tramos" de forma aislada
+        if not hasattr(self, "_canvas_tramos"):
+            padre = self._tabs.tab("Gráfica Tramos")
+            
+            self._lbl_tramos_grafica = ctk.CTkLabel(padre, text="Visualización Función por Tramos", font=("", 13))
+            self._lbl_tramos_grafica.pack(pady=(8, 4))
+            
+            self._canvas_tramos = tk.Canvas(
+                padre, width=LIENZO, height=LIENZO, bg=COLOR_FONDO, highlightthickness=0
+            )
+            self._canvas_tramos.pack(padx=10, pady=(0, 10))
+
+        self._canvas_tramos.delete("all")
+        xmin, xmax, ymin, ymax = datos["ventana"]
+        if xmax - xmin <= 0 or ymax - ymin <= 0:
+            return
+        sx = LIENZO / (xmax - xmin)
+        sy = LIENZO / (ymax - ymin)
+
+        def px(x: float) -> float:
+            return (x - xmin) * sx
+
+        def py(y: float) -> float:
+            return LIENZO - (y - ymin) * sy
+
+        # grilla
+        paso = _paso_agradable(xmax - xmin)
+        k = int(xmin / paso) - 1
+        while k * paso <= xmax + paso:
+            gx = k * paso
+            if xmin <= gx <= xmax:
+                self._canvas_tramos.create_line(px(gx), 0, px(gx), LIENZO, fill=COLOR_GRILLA)
+            gy = k * paso
+            if ymin <= gy <= ymax:
+                self._canvas_tramos.create_line(0, py(gy), LIENZO, py(gy), fill=COLOR_GRILLA)
+            k += 1
+
+        # ejes
+        if ymin <= 0 <= ymax:
+            self._canvas_tramos.create_line(0, py(0), LIENZO, py(0), fill=COLOR_EJE, width=2)
+        if xmin <= 0 <= xmax:
+            self._canvas_tramos.create_line(px(0), 0, px(0), LIENZO, fill=COLOR_EJE, width=2)
+
+        # curva
+        for (x, y) in datos["puntos"]:
+            cx, cy = px(x), py(y)
+            self._canvas_tramos.create_oval(cx - 1, cy - 1, cx + 1, cy + 1, fill=COLOR_CURVA, outline="")
+
+        # punto crítico de acumulación
+        hx, ky = datos["punto_a"]
+        if xmin <= hx <= xmax and ymin <= ky <= ymax:
+            cx, cy = px(hx), py(ky)
+            self._canvas_tramos.create_line(cx - 6, cy, cx + 6, cy, fill=COLOR_CENTRO, width=2)
+            self._canvas_tramos.create_line(cx, cy - 6, cx, cy + 6, fill=COLOR_CENTRO, width=2)
 
 def lanzar() -> None:
     App().mainloop()
