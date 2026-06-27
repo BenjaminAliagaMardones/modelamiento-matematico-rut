@@ -12,6 +12,8 @@ from src.conicas.constructor import construir_ecuacion
 from src.conicas.grafica import puntos_conica
 from src.rut.validador import validar_rut
 from src.conicas.algebra import raiz_cuadrada
+from src.conicas.elementos import calcular_elementos
+import re
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -31,6 +33,33 @@ CAMPOS_ELEMENTOS = [
     "Eje mayor / transverso",
     "Eje menor / conjugado",
     "Directriz",
+]
+
+# Cada elemento de la cónica tiene un color; el campo de texto y su marca en la
+# gráfica comparten ese color para vincularlos visualmente (leyenda por color).
+COLOR_ASINTOTA = "#9aa0a6"
+COLORES_ELEMENTOS = {
+    "Centro": "#ff5555",
+    "Vértice(s)": "#ffd24d",
+    "Foco(s)": "#5dd39e",
+    "Eje mayor / transverso": "#ff9f40",
+    "Eje menor / conjugado": "#4dd2ff",
+    "Directriz": "#c77dff",
+    "Asíntotas": COLOR_ASINTOTA,
+    "Eje": COLOR_ASINTOTA,
+}
+
+TIPOS_DISCONTINUIDAD = ["Removible", "Salto", "Infinita", "Ninguna"]
+OPCION_VACIA = "Selecciona…"
+
+# (nombre, tipo_widget, placeholder)
+CAMPOS_LIMITE = [
+    ("Límite por la izquierda", "texto", "número, +infinito o -infinito"),
+    ("Límite por la derecha", "texto", "número, +infinito o -infinito"),
+    ("¿Existe el límite?", "sino", ""),
+    ("Valor de f(a)", "texto", 'número, o "No def" si no existe'),
+    ("¿Es continua?", "sino", ""),
+    ("Tipo de discontinuidad", "opcion", ""),
 ]
 
 
@@ -80,12 +109,40 @@ def _paso_agradable(span: float) -> float:
     return m * p
 
 
+def _normalizar_limite(texto: str) -> str:
+    "Normaliza una respuesta del módulo de límites para comparar con flexibilidad."
+    t = texto.strip().lower().replace(" ", "")
+    t = t.replace("í", "i").replace("é", "e").replace("∞", "inf")
+    if t in ("", "..."):
+        return ""
+    if t in ("si", "yes", "verdadero", "true", "existe"):
+        return "si"
+    if t in ("no", "false", "falso", "noexiste"):
+        return "no"
+    if t in ("-infinito", "-inf"):
+        return "-inf"
+    if t in ("+infinito", "+inf", "infinito", "inf"):
+        return "+inf"
+    if t in ("nodef", "nodefinido", "nodefinida", "indefinido"):
+        return "nodef"
+    if t in ("removible", "salto", "saltofinito", "infinita", "ninguna", "continua"):
+        return "salto" if t == "saltofinito" else ("ninguna" if t == "continua" else t)
+    try:
+        return f"{float(t):.2f}"
+    except ValueError:
+        return t
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("EID N°1 — Geometría Analítica desde el RUT")
         self.geometry("1120x760")
         self._entries_elementos: dict[str, ctk.CTkEntry] = {}
+        self._filas_elementos: dict[str, ctk.CTkFrame] = {}
+        self._widgets_limite: dict[str, object] = {}
+        self._estado_limite: dict[str, ctk.CTkLabel] = {}
+        self._campos_validados_correctos: set[str] = set()
         self._construir()
 
     # ------------------------------------------------------------------ UI
@@ -112,7 +169,7 @@ class App(ctk.CTk):
         self._txt_ecuacion = self._textbox(self._tabs.tab("Ecuación general"))
         self._txt_canonica = self._textbox(self._tabs.tab("Clasificación / Canónica"))
         self._construir_tab_grafica(self._tabs.tab("Gráfica"))
-        self._txt_tramos = self._textbox(self._tabs.tab("Límites"))
+        self._construir_tab_limites(self._tabs.tab("Límites"))
 
     def _textbox(self, padre) -> ctk.CTkTextbox:
         caja = ctk.CTkTextbox(padre, font=FUENTE_MONO, wrap="none")
@@ -135,19 +192,21 @@ class App(ctk.CTk):
 
         derecha = ctk.CTkScrollableFrame(contenedor, label_text="Elementos de la cónica")
         derecha.pack(side="left", fill="both", expand=True)
-        ctk.CTkLabel(
+        self._lbl_ayuda_elementos = ctk.CTkLabel(
             derecha,
-            text="",
-            font=("", 12), justify="left",
-        ).pack(anchor="w", padx=8, pady=(4, 8))
+            text="Analiza un RUT para ver los elementos que corresponden a la figura.",
+            font=("", 12), justify="left", wraplength=260,
+        )
+        self._lbl_ayuda_elementos.pack(anchor="w", padx=8, pady=(4, 8))
         for nombre in CAMPOS_ELEMENTOS:
             fila = ctk.CTkFrame(derecha, fg_color="transparent")
-            fila.pack(fill="x", padx=8, pady=4)
-            ctk.CTkLabel(fila, text=nombre, width=170, anchor="w").pack(side="left")
+            color_elem = COLORES_ELEMENTOS.get(nombre, "#ffffff")
+            ctk.CTkLabel(fila, text=nombre, width=170, anchor="w", text_color=color_elem).pack(side="left")
             entrada = ctk.CTkEntry(fila, placeholder_text="...")
             entrada.pack(side="left", fill="x", expand=True)
             self._entries_elementos[nombre] = entrada
-        
+            self._filas_elementos[nombre] = fila
+
         self._lbl_resultado_val = ctk.CTkLabel(derecha, text="", font=("", 13, "bold"))
         self._lbl_resultado_val.pack(pady=(12, 4))
 
@@ -157,111 +216,149 @@ class App(ctk.CTk):
         self._btn_validar.pack(pady=(0, 12))
 
     def _analizar_elementos(self, datos_canonica, datos_grafica):
-            from src.conicas.algebra import fmt_dec
-            
-            tipo = datos_canonica["tipo"]
-            h = datos_canonica["h"]
-            k = datos_canonica["k"]
-            
-            self._elementos_correctos = {campo: "No aplica" for campo in CAMPOS_ELEMENTOS}
-            
-            if tipo == "degenerada":
-                return
+        tipo = datos_canonica["tipo"]
+        geom_elementos = calcular_elementos(datos_canonica, tipo)
+        self._elementos_correctos = geom_elementos["validacion"]
+        self._geom_elementos = geom_elementos
 
-            if tipo in ("circunferencia", "elipse", "hipérbola"):
-                self._elementos_correctos["Centro"] = f"({h},{k})"
-
-            if tipo == "elipse":
-                a = datos_canonica.get("a", 0.0)
-                b = datos_canonica.get("b", 0.0)
-                self._elementos_correctos["Eje mayor / transverso"] = fmt_dec(2 * a)
-                self._elementos_correctos["Eje menor / conjugado"] = fmt_dec(2 * b)
-                self._elementos_correctos["Vértice(s)"] = f"a={fmt_dec(a)}"
-                self._elementos_correctos["Foco(s)"] = "Ver ecuación canónica"
-
-            elif tipo == "hipérbola":
-                dx_abs = raiz_cuadrada(abs(datos_canonica["denom_x"].a_decimal()))
-                dy_abs = raiz_cuadrada(abs(datos_canonica["denom_y"].a_decimal()))
-                self._elementos_correctos["Eje mayor / transverso"] = fmt_dec(2 * dx_abs)
-                self._elementos_correctos["Eje menor / conjugado"] = fmt_dec(2 * dy_abs)
-                self._elementos_correctos["Vértice(s)"] = "Ver desarrollo"
-
-            elif tipo == "parábola" and not datos_canonica.get("degenerada"):
-                # En la parábola el (h, k) es el Vértice, no el Centro
-                self._elementos_correctos["Centro"] = "No aplica"
-                self._elementos_correctos["Vértice(s)"] = f"({h},{k})"
-                
-                p = datos_canonica["p"]
-                factor = datos_canonica["factor"]
-                self._elementos_correctos["Eje mayor / transverso"] = "No aplica" # Parábola no tiene ambos ejes
-                self._elementos_correctos["Eje menor / conjugado"] = "No aplica"
-                
-                if datos_canonica["orientacion"] == "vertical":
-                    # Foco (h, k + p), Directriz y = k - p
-                    foco_y = k.a_decimal() + p.a_decimal()
-                    dir_y = k.a_decimal() - p.a_decimal()
-                    self._elementos_correctos["Foco(s)"] = f"({h},{fmt_dec(foco_y)})"
-                    self._elementos_correctos["Directriz"] = f"y={fmt_dec(dir_y)}"
-                else:
-                    # Horizontal: Foco (h + p, k), Directriz x = h - p
-                    foco_x = h.a_decimal() + p.a_decimal()
-                    dir_x = h.a_decimal() - p.a_decimal()
-                    self._elementos_correctos["Foco(s)"] = f"({fmt_dec(foco_x)},{k})"
-                    self._elementos_correctos["Directriz"] = f"x={fmt_dec(dir_x)}"
+    def _mostrar_campos_aplicables(self) -> None:
+        "Muestra solo los campos que corresponden a la figura; oculta los demás."
+        correctos = getattr(self, "_elementos_correctos", {})
+        aplican = [c for c in CAMPOS_ELEMENTOS if correctos.get(c, "No aplica") != "No aplica"]
+        for nombre in CAMPOS_ELEMENTOS:
+            fila = self._filas_elementos[nombre]
+            if nombre in aplican:
+                fila.pack(fill="x", padx=8, pady=4, before=self._lbl_resultado_val)
+            else:
+                fila.pack_forget()
+        if aplican:
+            self._lbl_ayuda_elementos.configure(
+                text="Completa los elementos de la figura y pulsa «Validar Elementos»."
+            )
+        else:
+            self._lbl_ayuda_elementos.configure(
+                text="Analiza un RUT para ver los elementos que corresponden a la figura."
+            )
 
     def _validar_elementos(self):
-        # Si aún no se ha ejecutado un análisis de RUT válido
         if not hasattr(self, "_elementos_correctos"):
             self._lbl_resultado_val.configure(
                 text="Primero debes analizar un RUT válido.", text_color="#ff6b6b"
             )
             return
 
+        def evaluar_numero(s: str) -> float | None:
+            s = s.strip()
+            if not s:
+                return None
+            if "/" in s:
+                try:
+                    num, den = s.split("/")
+                    return float(num) / float(den)
+                except ValueError:
+                    return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+        def parsear_coordenadas(texto: str) -> list[tuple[float, float]]:
+            bloques = re.findall(r'\(([^)]+)\)', texto)
+            coords = []
+            for b in bloques:
+                partes = b.split(",")
+                if len(partes) == 2:
+                    x = evaluar_numero(partes[0])
+                    y = evaluar_numero(partes[1])
+                    if x is not None and y is not None:
+                        coords.append((x, y))
+            return coords
+
+        def parsear_directriz(texto: str) -> tuple[str, float] | None:
+            t = texto.replace(" ", "").lower()
+            if "=" not in t:
+                return None
+            var, valor_str = t.split("=", 1)
+            if var in ("x", "y"):
+                val = evaluar_numero(valor_str)
+                if val is not None:
+                    return (var, val)
+            return None
+
+        def es_valido_elemento(usuario: str, correcto_val) -> bool:
+            usuario = usuario.strip()
+            if not usuario:
+                return False
+            if correcto_val == "No aplica":
+                return usuario.lower() in ("", "no aplica", "noaplica")
+
+            # Coordenadas
+            if isinstance(correcto_val, list) or (isinstance(correcto_val, str) and correcto_val.startswith("(")):
+                reales_lista = correcto_val if isinstance(correcto_val, list) else [correcto_val]
+                reales_coords = []
+                for r_str in reales_lista:
+                    coords_r = parsear_coordenadas(r_str)
+                    if coords_r:
+                        reales_coords.extend(coords_r)
+                
+                usuario_coords = parsear_coordenadas(usuario)
+                if not reales_coords or not usuario_coords:
+                    return False
+                if len(usuario_coords) != len(reales_coords):
+                    return False
+                
+                reales_restantes = list(reales_coords)
+                for uc in usuario_coords:
+                    encontrado = None
+                    for rc in reales_restantes:
+                        if abs(uc[0] - rc[0]) < 0.05 and abs(uc[1] - rc[1]) < 0.05:
+                            encontrado = rc
+                            break
+                    if encontrado is not None:
+                        reales_restantes.remove(encontrado)
+                    else:
+                        return False
+                return len(reales_restantes) == 0
+
+            # Directriz
+            if isinstance(correcto_val, str) and (correcto_val.startswith("y=") or correcto_val.startswith("x=")):
+                real_dir = parsear_directriz(correcto_val)
+                user_dir = parsear_directriz(usuario)
+                if real_dir is None or user_dir is None:
+                    return False
+                return real_dir[0] == user_dir[0] and abs(real_dir[1] - user_dir[1]) < 0.05
+
+            # Ejes
+            real_num = evaluar_numero(str(correcto_val))
+            user_num = evaluar_numero(usuario)
+            if real_num is not None and user_num is not None:
+                return abs(real_num - user_num) < 0.05
+
+            return usuario.replace(" ", "").lower() == str(correcto_val).replace(" ", "").lower()
+
         errores = 0
         campos_revisados = 0
-
-        def normalizar_y_evaluar(texto: str) -> str:
-            """Limpia espacios y resuelve fracciones simples (ej: '1/2' -> '0.5') 
-            para poder comparar valores numéricos con flexibilidad."""
-            t = texto.replace(" ", "").lower()
-            if not t or t == "..." or t == "noaplica":
-                return "noaplica"
-            # Intentar parsear si es un formato de coordenada (x,y)
-            if t.startswith("(") and t.endswith(")"):
-                partes = t[1:-1].split(",")
-                if len(partes) == 2:
-                    return f"({normalizar_y_evaluar(partes[0])},{normalizar_y_evaluar(partes[1])})"
-            # Intentar resolver si contiene una barra de división (Fracción)
-            if "/" in t and not t.startswith("x=") and not t.startswith("y="):
-                try:
-                    num, den = t.split("/")
-                    return f"{float(num)/float(den):.2f}"
-                except ValueError:
-                    pass
-            # Intentar convertir un número plano a float estándar
-            try:
-                return f"{float(t):.2f}"
-            except ValueError:
-                return t
+        self._campos_validados_correctos = set()
 
         for campo in CAMPOS_ELEMENTOS:
-            entrada_usuario = self._entries_elementos[campo].get()
             valor_real = self._elementos_correctos[campo]
+            if valor_real == "No aplica":
+                continue
 
-            usuario_norm = normalizar_y_evaluar(entrada_usuario)
-            real_norm = normalizar_y_evaluar(str(valor_real))
+            entrada_usuario = self._entries_elementos[campo].get()
+            es_ok = es_valido_elemento(entrada_usuario, valor_real)
 
-            if usuario_norm == "noaplica" and real_norm != "noaplica":
-                self._entries_elementos[campo].configure(fg_color="#3a2f1d")
-                errores += 1
-            elif usuario_norm == real_norm:
+            if es_ok:
                 self._entries_elementos[campo].configure(fg_color="#1e3a1e")
+                self._campos_validados_correctos.add(campo)
             else:
                 self._entries_elementos[campo].configure(fg_color="#3a1e1e")
                 errores += 1
             campos_revisados += 1
 
-        if errores == 0:
+        if campos_revisados == 0:
+            self._lbl_resultado_val.configure(text="")
+        elif errores == 0:
             self._lbl_resultado_val.configure(
                 text="¡Todos los elementos son correctos! 🎉", text_color="#5dd39e"
             )
@@ -270,7 +367,134 @@ class App(ctk.CTk):
                 text=f"Revisión completada. Tienes {errores} observaciones.", text_color="#ff6b6b"
             )
         
+        if hasattr(self, "_datos_grafica_actual"):
+            self._dibujar(self._datos_grafica_actual)
 
+    # --------------------------------------------------- pestaña de límites
+    def _construir_tab_limites(self, padre) -> None:
+        contenedor = ctk.CTkFrame(padre, fg_color="transparent")
+        contenedor.pack(fill="both", expand=True, padx=8, pady=8)
+
+        izquierda = ctk.CTkFrame(contenedor, fg_color="transparent")
+        izquierda.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self._txt_tramos = ctk.CTkTextbox(izquierda, font=FUENTE_MONO, wrap="none")
+        self._txt_tramos.pack(fill="both", expand=True)
+        self._txt_tramos.configure(state="disabled")
+
+        derecha = ctk.CTkScrollableFrame(
+            contenedor, label_text="Tu análisis", width=340
+        )
+        derecha.pack(side="left", fill="y")
+
+        for nombre, tipo, placeholder in CAMPOS_LIMITE:
+            cabecera = ctk.CTkFrame(derecha, fg_color="transparent")
+            cabecera.pack(fill="x", padx=8, pady=(8, 0))
+            ctk.CTkLabel(cabecera, text=nombre, anchor="w").pack(side="left")
+            estado = ctk.CTkLabel(cabecera, text="", width=20, font=("", 15, "bold"))
+            estado.pack(side="right")
+            self._estado_limite[nombre] = estado
+
+            if tipo == "sino":
+                widget = ctk.CTkSegmentedButton(derecha, values=["Sí", "No"])
+                widget.set("")
+            elif tipo == "opcion":
+                widget = ctk.CTkOptionMenu(
+                    derecha, values=[OPCION_VACIA] + TIPOS_DISCONTINUIDAD
+                )
+                widget.set(OPCION_VACIA)
+            else:
+                widget = ctk.CTkEntry(derecha, placeholder_text=placeholder)
+            widget.pack(fill="x", padx=8, pady=(0, 2))
+            self._widgets_limite[nombre] = widget
+
+        ctk.CTkLabel(derecha, text="Justificación del comportamiento:", anchor="w").pack(
+            anchor="w", padx=8, pady=(10, 2)
+        )
+        self._txt_justificacion = ctk.CTkTextbox(derecha, height=80, wrap="word")
+        self._txt_justificacion.pack(fill="x", padx=8, pady=(0, 8))
+
+        self._lbl_resultado_lim = ctk.CTkLabel(derecha, text="", font=("", 13, "bold"))
+        self._lbl_resultado_lim.pack(pady=(8, 4))
+        ctk.CTkButton(
+            derecha, text="Validar análisis", command=self._validar_limite
+        ).pack(pady=(0, 12))
+
+    def _valor_limite(self, nombre: str) -> str:
+        "Lee el valor ingresado en un widget de la pestaña de límites."
+        widget = self._widgets_limite[nombre]
+        valor = widget.get()
+        return "" if valor == OPCION_VACIA else valor
+
+    def _analizar_limite_correctos(self, res_tramo: dict, res_limites: dict) -> None:
+        "Calcula las respuestas correctas para contrastar con lo que ingrese el alumno."
+        tipo = res_tramo["tipo"]
+        a = res_tramo["a"]
+        tramos = res_tramo["tramos"]
+        existe = res_limites["existe_limite"]
+
+        if tipo == "salto":
+            valor_fa = str(a + tramos["d4"])
+            continua = "Sí" if existe else "No"
+            disc = "Ninguna" if existe else "Salto"
+        elif tipo == "removible":
+            valor_fa = "No def"
+            continua = "No"
+            disc = "Removible"
+        else:  # infinita
+            valor_fa = "No def"
+            continua = "No"
+            disc = "Infinita"
+
+        self._limite_correctos = {
+            "Límite por la izquierda": str(res_limites["limite_izquierdo"]),
+            "Límite por la derecha": str(res_limites["limite_derecho"]),
+            "¿Existe el límite?": "Sí" if existe else "No",
+            "Valor de f(a)": valor_fa,
+            "¿Es continua?": continua,
+            "Tipo de discontinuidad": disc,
+        }
+
+    def _reset_entries_limite(self) -> None:
+        for nombre, tipo, _ in CAMPOS_LIMITE:
+            widget = self._widgets_limite[nombre]
+            if tipo == "sino":
+                widget.set("")
+            elif tipo == "opcion":
+                widget.set(OPCION_VACIA)
+            else:
+                widget.delete(0, "end")
+            self._estado_limite[nombre].configure(text="")
+        if hasattr(self, "_txt_justificacion"):
+            self._txt_justificacion.delete("1.0", "end")
+        if hasattr(self, "_lbl_resultado_lim"):
+            self._lbl_resultado_lim.configure(text="")
+
+    def _validar_limite(self) -> None:
+        if not hasattr(self, "_limite_correctos"):
+            self._lbl_resultado_lim.configure(
+                text="Primero analiza un RUT válido.", text_color="#ff6b6b"
+            )
+            return
+
+        errores = 0
+        for nombre, _tipo, _ph in CAMPOS_LIMITE:
+            usuario = _normalizar_limite(self._valor_limite(nombre))
+            real = _normalizar_limite(self._limite_correctos[nombre])
+            if usuario and usuario == real:
+                self._estado_limite[nombre].configure(text="✓", text_color="#5dd39e")
+            else:
+                self._estado_limite[nombre].configure(text="✗", text_color="#ff6b6b")
+                errores += 1
+
+        if errores == 0:
+            self._lbl_resultado_lim.configure(
+                text="¡Análisis correcto! 🎉", text_color="#5dd39e"
+            )
+        else:
+            self._lbl_resultado_lim.configure(
+                text=f"Tienes {errores} de {len(CAMPOS_LIMITE)} por corregir.",
+                text_color="#ff6b6b",
+            )
 
     # ------------------------------------------------------------- lógica
     def _set_text(self, caja: ctk.CTkTextbox, texto: str) -> None:
@@ -321,8 +545,12 @@ class App(ctk.CTk):
             text=f"{tipo.upper()}   ·   {res['ecuacion']}\nCanónica:  {can['forma_canonica']}"
         )
         datos = puntos_conica(res["coeficientes"], can["parametros"], tipo)
+        self._can_parametros_actual = can["parametros"]
+        self._tipo_conica_actual = tipo
+        self._datos_grafica_actual = datos
         self._dibujar(datos)
         self._analizar_elementos(can["parametros"], datos)
+        self._mostrar_campos_aplicables()
 
         try:
             from src.tramos.constructor import construir_funcion
@@ -343,12 +571,18 @@ class App(ctk.CTk):
             bloque_final += res_tabla["pasos"]
             
             self._set_text(self._txt_tramos, "\n".join(bloque_final))
-            
+
+            self._analizar_limite_correctos(res_tramo, res_limites)
+            self._reset_entries_limite()
+
             datos_grafica = obtener_puntos_grafica(res_tramo)
             self._dibujar_tramos(datos_grafica)
-            
+
         except Exception:
             self._set_text(self._txt_tramos, "")
+            if hasattr(self, "_limite_correctos"):
+                del self._limite_correctos
+            self._reset_entries_limite()
     def _limpiar_resultados(self) -> None:
         for caja in (self._txt_ecuacion, self._txt_canonica, self._txt_tramos):
             self._set_text(caja, "")
@@ -369,6 +603,26 @@ class App(ctk.CTk):
         for entrada in self._entries_elementos.values():
             entrada.delete(0, "end")
             entrada.configure(fg_color=("#F9F9FA", "#343638"))
+
+        # Sin figura válida: oculta todos los campos y vuelve al texto de ayuda.
+        if hasattr(self, "_elementos_correctos"):
+            del self._elementos_correctos
+        if hasattr(self, "_geom_elementos"):
+            del self._geom_elementos
+        if hasattr(self, "_campos_validados_correctos"):
+            self._campos_validados_correctos.clear()
+        if hasattr(self, "_datos_grafica_actual"):
+            del self._datos_grafica_actual
+        if hasattr(self, "_can_parametros_actual"):
+            del self._can_parametros_actual
+        if hasattr(self, "_tipo_conica_actual"):
+            del self._tipo_conica_actual
+        self._mostrar_campos_aplicables()
+
+        if hasattr(self, "_widgets_limite") and self._widgets_limite:
+            self._reset_entries_limite()
+        if hasattr(self, "_limite_correctos"):
+            del self._limite_correctos
 
     # ------------------------------------------------------------- dibujo
     def _dibujar(self, datos: dict) -> None:
@@ -408,12 +662,50 @@ class App(ctk.CTk):
             cx, cy = px(x), py(y)
             self._canvas.create_oval(cx - 1, cy - 1, cx + 1, cy + 1, fill=COLOR_CURVA, outline="")
 
-        # centro / vértice
+        # centro / vértice base
         hx, ky = datos["centro"]
         if xmin <= hx <= xmax and ymin <= ky <= ymax:
             cx, cy = px(hx), py(ky)
             self._canvas.create_line(cx - 6, cy, cx + 6, cy, fill=COLOR_CENTRO, width=2)
             self._canvas.create_line(cx, cy - 6, cx, cy + 6, fill=COLOR_CENTRO, width=2)
+
+        # Dibujar elementos matemáticos detallados de la cónica (ejes, directriz, focos, vértices, etc.)
+        geom = getattr(self, "_geom_elementos", None)
+
+        if geom:
+            # 1. Segmentos (Ejes)
+            for x1, y1, x2, y2, campo in geom.get("segmentos", []):
+                color = COLORES_ELEMENTOS.get(campo, "#ffffff")
+                self._canvas.create_line(px(x1), py(y1), px(x2), py(y2), fill=color, width=2, dash=(4, 4))
+
+            # 2. Rectas (Directriz, Asíntotas, Eje de simetría)
+            for clase, val_datos, campo in geom.get("rectas", []):
+                color = COLORES_ELEMENTOS.get(campo, "#ffffff")
+                if clase == "vertical":
+                    x_pix = px(val_datos)
+                    self._canvas.create_line(x_pix, 0, x_pix, LIENZO, fill=color, width=2, dash=(6, 4))
+                elif clase == "horizontal":
+                    y_pix = py(val_datos)
+                    self._canvas.create_line(0, y_pix, LIENZO, y_pix, fill=color, width=2, dash=(6, 4))
+                elif clase == "oblicua":
+                    hx_c, ky_c, m = val_datos
+                    y_left = ky_c + m * (xmin - hx_c)
+                    y_right = ky_c + m * (xmax - hx_c)
+                    self._canvas.create_line(px(xmin), py(y_left), px(xmax), py(y_right), fill=color, width=1.5, dash=(4, 4))
+
+            # 3. Puntos (Centro, Vértices, Focos)
+            for x, y, campo in geom.get("puntos", []):
+                color = COLORES_ELEMENTOS.get(campo, "#ffffff")
+                cx, cy = px(x), py(y)
+                if campo == "Centro":
+                    self._canvas.create_line(cx - 8, cy, cx + 8, cy, fill=color, width=2)
+                    self._canvas.create_line(cx, cy - 8, cx, cy + 8, fill=color, width=2)
+                    self._canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3, fill=color, outline="#ffffff")
+                elif campo == "Vértice(s)":
+                    self._canvas.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, fill=color, outline="#ffffff", width=1.5)
+                elif campo == "Foco(s)":
+                    self._canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3, fill=color, outline="")
+                    self._canvas.create_oval(cx - 6, cy - 6, cx + 6, cy + 6, fill="", outline=color, width=1.5)
 
 # ------------------------------------------------------- dibujo tramos
     def _dibujar_tramos(self, datos: dict) -> None:
@@ -460,17 +752,34 @@ class App(ctk.CTk):
         if xmin <= 0 <= xmax:
             self._canvas_tramos.create_line(px(0), 0, px(0), LIENZO, fill=COLOR_EJE, width=2)
 
+        # asíntota vertical (caso discontinuidad infinita)
+        ax = datos.get("asintota_x")
+        if ax is not None and xmin <= ax <= xmax:
+            x_pix = px(ax)
+            for y0 in range(0, LIENZO, 12):
+                self._canvas_tramos.create_line(
+                    x_pix, y0, x_pix, y0 + 6, fill=COLOR_CENTRO, width=1
+                )
+
         # curva
         for (x, y) in datos["puntos"]:
             cx, cy = px(x), py(y)
             self._canvas_tramos.create_oval(cx - 1, cy - 1, cx + 1, cy + 1, fill=COLOR_CURVA, outline="")
 
-        # punto crítico de acumulación
-        hx, ky = datos["punto_a"]
-        if xmin <= hx <= xmax and ymin <= ky <= ymax:
-            cx, cy = px(hx), py(ky)
-            self._canvas_tramos.create_line(cx - 6, cy, cx + 6, cy, fill=COLOR_CENTRO, width=2)
-            self._canvas_tramos.create_line(cx, cy - 6, cx, cy + 6, fill=COLOR_CENTRO, width=2)
+        # marcadores en el punto crítico: hueco (abierto) o extremo (cerrado)
+        for (x, y, clase) in datos.get("marcadores", []):
+            if not (xmin <= x <= xmax and ymin <= y <= ymax):
+                continue
+            cx, cy = px(x), py(y)
+            if clase == "cerrado":
+                self._canvas_tramos.create_oval(
+                    cx - 5, cy - 5, cx + 5, cy + 5, fill=COLOR_CENTRO, outline=""
+                )
+            else:  # abierto: círculo hueco para representar el punto faltante
+                self._canvas_tramos.create_oval(
+                    cx - 5, cy - 5, cx + 5, cy + 5,
+                    fill=COLOR_FONDO, outline=COLOR_CENTRO, width=2,
+                )
 
 def lanzar() -> None:
     App().mainloop()
