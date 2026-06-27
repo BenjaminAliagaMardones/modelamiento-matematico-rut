@@ -182,8 +182,24 @@ class App(ctk.CTk):
         for nombre in CAMPOS_ELEMENTOS:
             fila = ctk.CTkFrame(derecha, fg_color="transparent")
             fila.pack(fill="x", padx=8, pady=4)
-            ctk.CTkLabel(fila, text=nombre, width=170,
-                         anchor="w").pack(side="left")
+
+            color = (
+                COLOR_CENTRO if nombre == "Centro" else
+                "#ffd166" if nombre == "Vértice(s)" else
+                "#06d6a0" if nombre == "Foco(s)" else
+                "#4da6ff" if nombre == "Eje mayor / transverso" else
+                "#a78bfa" if nombre == "Eje menor / conjugado" else
+                "#ff9f1c" if nombre == "Directriz" else
+                "white"
+            )
+
+            ctk.CTkLabel(
+                fila,
+                text=nombre,
+                width=170,
+                anchor="w",
+                text_color=color
+            ).pack(side="left")
             entrada = ctk.CTkEntry(fila, placeholder_text="...")
             entrada.pack(side="left", fill="x", expand=True)
             self._entries_elementos[nombre] = entrada
@@ -504,7 +520,37 @@ class App(ctk.CTk):
             self._canvas.create_line(
                 cx, cy - 6, cx, cy + 6, fill=COLOR_CENTRO, width=2)
 
+        for vx, vy in datos.get("elementos", {}).get("vértices", []):
+            if xmin <= vx <= xmax and ymin <= vy <= ymax:
+                cx, cy = px(vx), py(vy)
+                self._canvas.create_oval(
+                    cx-4, cy-4, cx+4, cy+4, fill="#ffd166")
+
+        for fx, fy in datos.get("elementos", {}).get("focos", []):
+            if xmin <= fx <= xmax and ymin <= fy <= ymax:
+                cx, cy = px(fx), py(fy)
+                self._canvas.create_oval(
+                    cx-5, cy-5, cx+5, cy+5, fill="#ff006e")
+
+        dir_data = datos.get("elementos", {}).get("directriz")
+
+        if dir_data:
+            tipo_dir, val = dir_data
+
+            if tipo_dir == "horizontal":
+                y = py(val)
+                self._canvas.create_line(
+                    0, y, LIENZO, y, fill="#06d6a0", dash=(4, 2))
+
+            elif tipo_dir == "vertical":
+                x = px(val)
+                self._canvas.create_line(
+                    x, 0, x, LIENZO, fill="#06d6a0", dash=(4, 2))
+
+
 # ------------------------------------------------------- dibujo tramos
+
+
     def _dibujar_tramos(self, datos: dict) -> None:
         if not hasattr(self, "_tramos_interfaz_creada"):
             padre = self._tabs.tab("Gráfica Tramos")

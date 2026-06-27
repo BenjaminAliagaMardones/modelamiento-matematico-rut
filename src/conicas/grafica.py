@@ -91,8 +91,83 @@ def puntos_conica(coef_float: dict, parametros: dict, tipo: str) -> dict:
                 puntos.append((xv, y))
         y += paso_y
 
+    if tipo == "parábola":
+        p = parametros["p"]
+        p = p.a_decimal() if hasattr(p, "a_decimal") else float(p)
+        h, k = hx, ky
+
+        if parametros.get("orientacion") == "vertical":
+            focos = [(h, k + p)]
+            directriz = ("horizontal", k - p)
+            vertices = [(h, k)]
+
+        else:
+            focos = [(h + p, k)]
+            directriz = ("vertical", h - p)
+            vertices = [(h, k)]
+
+    elif tipo == "elipse":
+        a = parametros.get("a")
+        b = parametros.get("b")
+
+        if a is None or b is None:
+            return {
+                "ventana": (xmin, xmax, ymin, ymax),
+                "centro": (hx, ky),
+                "puntos": puntos,
+                "elementos": {}
+            }
+
+        a = a.a_decimal() if hasattr(a, "a_decimal") else float(a)
+        b = b.a_decimal() if hasattr(b, "a_decimal") else float(b)
+
+        c = (a**2 - b**2) ** 0.5
+
+        focos = [(hx + c, ky), (hx - c, ky)]
+        vertices = [(hx + a, ky), (hx - a, ky), (hx, ky + b), (hx, ky - b)]
+        directriz = None
+
+    elif tipo == "hipérbola":
+        a = parametros.get("a")
+        b = parametros.get("b")
+
+        if a is None or b is None:
+            return {
+                "ventana": (xmin, xmax, ymin, ymax),
+                "centro": (hx, ky),
+                "puntos": puntos,
+                "elementos": {}
+            }
+
+        a = a.a_decimal() if hasattr(a, "a_decimal") else float(a)
+        b = b.a_decimal() if hasattr(b, "a_decimal") else float(b)
+
+        c = (a**2 + b**2) ** 0.5
+
+        focos = [(hx + c, ky), (hx - c, ky)]
+        vertices = [(hx + a, ky), (hx - a, ky)]
+        directriz = None
+
+    elif tipo == "circunferencia":
+        r = parametros["r"]
+        r = r.a_decimal() if hasattr(r, "a_decimal") else float(r)
+
+        focos = []
+        vertices = [
+            (hx + r, ky), (hx - r, ky),
+            (hx, ky + r), (hx, ky - r)
+        ]
+        directriz = None
+
     return {
         "ventana": (xmin, xmax, ymin, ymax),
         "centro": (hx, ky),
         "puntos": puntos,
+        "elementos": {
+            "tipo": tipo,
+            "vértices": vertices,
+            "focos": focos,
+            "directriz": directriz,
+            "ejes": [],
+        }
     }
